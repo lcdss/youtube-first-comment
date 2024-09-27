@@ -1,10 +1,22 @@
 [package]
 name = "youtube-first-comment"
-version = "0.3.0"
+description = "A simple program that creates a new comment on YouTube when a new video is published for the specified channel"
+version = "0.4.0"
+publish = true
+authors = ["Lucas Silva <lcssbr@gmail.com>"]
+categories = ["command-line-utilities"]
 edition = "2021"
+keywords = ["youtube", "utility"]
+license = "MIT"
+repository = "https://github.com/lcdss/youtube-first-comment"
+
+[[bin]]
+name = "yfc"
+path = "src/main.rs"
 
 [dependencies]
 clap = { version = "4.5.18", features = ["derive"] }
+dirs = "5.0.1"
 google-youtube3 = "5.0.5"
 tokio = { version = "1.40.0", features = ["macros", "rt-multi-thread"] }
 

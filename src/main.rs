@@ -1,4 +1,5 @@
 use clap::Parser;
+use dirs::cache_dir;
 use google_youtube3::{
   api::{Comment, CommentSnippet, CommentThread, CommentThreadSnippet},
   hyper::{client::HttpConnector, Client},
@@ -6,7 +7,7 @@ use google_youtube3::{
   oauth2::{ApplicationSecret, InstalledFlowAuthenticator, InstalledFlowReturnMethod},
   YouTube,
 };
-use std::{error::Error, io, process, time::Duration};
+use std::{error::Error, fs, io, path::PathBuf, process, time::Duration};
 use tokio::time::sleep;
 
 #[derive(Parser)]
@@ -108,6 +109,13 @@ async fn post_comment(client: &YoutubeClient, video_id: &str, comment: &str) -> 
   client.comment_threads().insert(comment_thread).doit().await.map(|_| ())
 }
 
+fn get_token_storage_path() -> PathBuf {
+  cache_dir()
+    .expect("Could not find the cache directory")
+    .join("yfc")
+    .join("token.json")
+}
+
 async fn get_youtube_client(client_id: &str, client_secret: &str) -> io::Result<YoutubeClient> {
   let secret = ApplicationSecret {
     client_id: client_id.into(),
@@ -117,8 +125,15 @@ async fn get_youtube_client(client_id: &str, client_secret: &str) -> io::Result<
     ..Default::default()
   };
 
+  let token_path = get_token_storage_path();
+  let app_cache_path = token_path.parent().unwrap();
+
+  if !fs::exists(app_cache_path)? {
+    fs::create_dir(app_cache_path)?;
+  }
+
   let auth = InstalledFlowAuthenticator::builder(secret, InstalledFlowReturnMethod::HTTPRedirect)
-    .persist_tokens_to_disk("token.json")
+    .persist_tokens_to_disk(token_path)
     .build()
     .await?;
 

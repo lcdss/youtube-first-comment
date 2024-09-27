@@ -18,60 +18,70 @@ const MAX_RETRIES: u8 = 3;
 const POOL_INTERVAL: u64 = 15;
 
 async fn get_uploads_playlist_id(
-    client: &reqwest::Client,
-    api_key: &str,
+    client: &YouTube<HttpsConnector<HttpConnector>>,
     channel_id: &str,
-) -> Result<Option<String>, Box<dyn std::error::Error>> {
+) -> Option<String> {
     let response = client
-        .get(format!(
-            "https://www.googleapis.com/youtube/v3/channels?part=contentDetails&id={}&key={}",
-            channel_id, api_key
-        ))
-        .send()
-        .await?
-        .json::<serde_json::Value>()
-        .await?;
+        .channels()
+        .list(&vec!["contentDetails".into()])
+        .add_id(channel_id)
+        .doit()
+        .await;
 
-    let playlist_id = response["items"][0]["contentDetails"]["relatedPlaylists"]["uploads"]
-        .as_str()
-        .map(String::from);
-
-    Ok(playlist_id)
+    if let Ok((_, result)) = response {
+        result.items.and_then(|items| {
+            items
+                .first()
+                .and_then(|item| item.content_details.as_ref())
+                .and_then(|details| details.related_playlists.as_ref())
+                .and_then(|playlists| playlists.uploads.clone())
+        })
+    } else {
+        None
+    }
 }
 
 async fn get_latest_video_id(
-    client: &reqwest::Client,
-    api_key: &str,
+    client: &YouTube<HttpsConnector<HttpConnector>>,
     playlist_id: &str,
-) -> Result<Option<String>, Box<dyn std::error::Error>> {
+) -> Option<String> {
     let response = client
-        .get(format!(
-            "https://www.googleapis.com/youtube/v3/playlistItems?part=snippet&playlistId={}&maxResults=1&key={}",
-            playlist_id, api_key
-        ))
-        .send()
-        .await?
-        .json::<serde_json::Value>()
-        .await?;
+        .playlist_items()
+        .list(&vec!["snippet".into()])
+        .playlist_id(playlist_id)
+        .max_results(1)
+        .doit()
+        .await;
 
-    let description = response["items"][0]["snippet"]["description"].to_string();
+    if let Ok((_, result)) = response {
+        result
+            .items
+            .and_then(|items| items.first().cloned())
+            .and_then(|item| item.snippet)
+            .and_then(|snippet| {
+                let description = snippet.description.unwrap_or_default();
 
-    if description.contains("#shorts") {
-        println!("Latest video is a short");
-        return Ok(None);
+                // Check for #shorts in the description
+                if description.contains("#shorts") {
+                    println!("Latest video is a short");
+                    return None;
+                }
+
+                snippet
+                    .resource_id
+                    .as_ref()
+                    .map(|resource_id| resource_id.video_id.clone())
+                    .unwrap_or_default()
+            })
+    } else {
+        None
     }
-
-    let video_id = response["items"][0]["snippet"]["resourceId"]["videoId"]
-        .as_str()
-        .map(String::from);
-
-    Ok(video_id)
 }
 
 async fn post_comment(
     client: &YouTube<HttpsConnector<HttpConnector>>,
     video_id: &str,
-) -> Result<(), Box<dyn Error>> {
+) -> Result<(), google_youtube3::Error> {
     let comment = "Always first for you".to_string();
 
     let comment_thread = CommentThread {
@@ -89,17 +99,12 @@ async fn post_comment(
         ..Default::default()
     };
 
-    println!("Posting the comment...");
-
-    let response = client.comment_threads().insert(comment_thread).doit().await;
-
-    match response {
-        Ok(_) => {
-            println!("Comment posted successfully!");
-            Ok(())
-        }
-        Err(err) => Err(Box::new(err)),
-    }
+    client
+        .comment_threads()
+        .insert(comment_thread)
+        .doit()
+        .await
+        .map(|_| ())
 }
 
 async fn get_youtube_client() -> Result<YouTube<HttpsConnector<HttpConnector>>, Box<dyn Error>> {
@@ -131,38 +136,27 @@ async fn get_youtube_client() -> Result<YouTube<HttpsConnector<HttpConnector>>, 
 async fn main() -> Result<(), Box<dyn Error>> {
     dotenvy::dotenv()?;
 
-    let api_key = env::var("API_KEY")?;
-    let channel_id = env::var("CHANNEL_ID")?;
+    let client = get_youtube_client().await?;
 
-    println!("API_KEY: {api_key}");
-    println!("CHANNEL_ID: {channel_id}");
-
-    let client = reqwest::Client::new();
-    let youtube_client = get_youtube_client().await?;
-
-    let uploads_playlist_id = get_uploads_playlist_id(&client, &api_key, &channel_id)
-        .await?
+    let uploads_playlist_id = get_uploads_playlist_id(&client, &env::var("CHANNEL_ID")?)
+        .await
         .ok_or("Failed to get uploads playlist ID")?;
 
     println!("Uploads Playlist ID: {uploads_playlist_id}");
 
     let mut retries = 0;
-    let latest_video_id = get_latest_video_id(&client, &api_key, &uploads_playlist_id)
-        .await
-        .unwrap_or(None);
+    let latest_video_id = get_latest_video_id(&client, &uploads_playlist_id).await;
 
     loop {
         sleep(Duration::from_secs(POOL_INTERVAL)).await;
 
-        if let Some(new_video_id) =
-            get_latest_video_id(&client, &api_key, &uploads_playlist_id).await?
-        {
+        if let Some(new_video_id) = get_latest_video_id(&client, &uploads_playlist_id).await {
             println!("Latest Video ID: {new_video_id}");
 
             if Some(new_video_id.clone()) != latest_video_id {
                 println!("New Video Published: {new_video_id}");
 
-                match post_comment(&youtube_client, &new_video_id).await {
+                match post_comment(&client, &new_video_id).await {
                     Ok(_) => process::exit(0),
                     Err(e) => {
                         eprintln!("Failed to post comment: {e}");
@@ -173,7 +167,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }
 
         if retries == MAX_RETRIES {
-            process::exit(-1);
+            panic!("Max tries to create a comment was reached")
         }
     }
 }

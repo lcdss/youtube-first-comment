@@ -1,16 +1,16 @@
 [package]
 name = "youtube-first-comment"
-version = "0.1.0"
+version = "0.3.0"
 edition = "2021"
 
 [dependencies]
-dotenvy = "0.15.7"
+clap = { version = "4.5.18", features = ["derive"] }
 google-youtube3 = "5.0.5"
-serde = { version = "1", features = ["derive"] }
 tokio = { version = "1.40.0", features = ["macros", "rt-multi-thread"] }
 
 [profile.release]
 codegen-units = 1
 lto = true
-opt-level = 3
+opt-level = "s"
 panic = "abort"
+strip = true

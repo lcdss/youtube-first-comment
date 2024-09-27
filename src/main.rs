@@ -1,173 +1,175 @@
+use clap::Parser;
 use google_youtube3::{
-    api::{Comment, CommentSnippet, CommentThread, CommentThreadSnippet},
-    hyper::{client::HttpConnector, Client},
-    hyper_rustls::{HttpsConnector, HttpsConnectorBuilder},
-    oauth2::{ApplicationSecret, InstalledFlowAuthenticator, InstalledFlowReturnMethod},
-    YouTube,
+  api::{Comment, CommentSnippet, CommentThread, CommentThreadSnippet},
+  hyper::{client::HttpConnector, Client},
+  hyper_rustls::{HttpsConnector, HttpsConnectorBuilder},
+  oauth2::{ApplicationSecret, InstalledFlowAuthenticator, InstalledFlowReturnMethod},
+  YouTube,
 };
-use serde::{Deserialize, Serialize};
-use std::{env, error::Error, process, time::Duration};
+use std::{error::Error, io, process, time::Duration};
 use tokio::time::sleep;
 
-#[derive(Debug, Deserialize, Serialize)]
-struct YoutubeNotification {
-    kind: String,
+#[derive(Parser)]
+struct Args {
+  /// Google client ID
+  #[arg(long, required = true)]
+  google_client_id: String,
+
+  /// Google client secret
+  #[arg(long, required = true)]
+  google_client_secret: String,
+
+  /// The comment body
+  #[arg(long, required = true)]
+  comment: String,
+
+  /// YouTube channel ID
+  #[arg(long, required = true)]
+  channel_id: String,
+
+  /// Pool interval (in seconds)
+  #[arg(long, default_value = "60")]
+  pool_interval: u64,
 }
+
+type YoutubeClient = YouTube<HttpsConnector<HttpConnector>>;
 
 const MAX_RETRIES: u8 = 3;
-const POOL_INTERVAL: u64 = 15;
 
-async fn get_uploads_playlist_id(
-    client: &YouTube<HttpsConnector<HttpConnector>>,
-    channel_id: &str,
-) -> Option<String> {
-    let response = client
-        .channels()
-        .list(&vec!["contentDetails".into()])
-        .add_id(channel_id)
-        .doit()
-        .await;
+async fn get_uploads_playlist_id(client: &YoutubeClient, channel_id: &str) -> Option<String> {
+  let response = client
+    .channels()
+    .list(&vec!["contentDetails".into()])
+    .add_id(channel_id)
+    .doit()
+    .await;
 
-    if let Ok((_, result)) = response {
-        result.items.and_then(|items| {
-            items
-                .first()
-                .and_then(|item| item.content_details.as_ref())
-                .and_then(|details| details.related_playlists.as_ref())
-                .and_then(|playlists| playlists.uploads.clone())
-        })
-    } else {
-        None
-    }
+  if let Ok((_, result)) = response {
+    result.items.and_then(|items| {
+      items
+        .first()
+        .and_then(|item| item.content_details.as_ref())
+        .and_then(|details| details.related_playlists.as_ref())
+        .and_then(|playlists| playlists.uploads.clone())
+    })
+  } else {
+    None
+  }
 }
 
-async fn get_latest_video_id(
-    client: &YouTube<HttpsConnector<HttpConnector>>,
-    playlist_id: &str,
-) -> Option<String> {
-    let response = client
-        .playlist_items()
-        .list(&vec!["snippet".into()])
-        .playlist_id(playlist_id)
-        .max_results(1)
-        .doit()
-        .await;
+async fn get_latest_video_id(client: &YoutubeClient, playlist_id: &str) -> Option<String> {
+  let response = client
+    .playlist_items()
+    .list(&vec!["snippet".into()])
+    .playlist_id(playlist_id)
+    .max_results(1)
+    .doit()
+    .await;
 
-    if let Ok((_, result)) = response {
-        result
-            .items
-            .and_then(|items| items.first().cloned())
-            .and_then(|item| item.snippet)
-            .and_then(|snippet| {
-                let description = snippet.description.unwrap_or_default();
+  if let Ok((_, result)) = response {
+    result
+      .items
+      .and_then(|items| items.first().cloned())
+      .and_then(|item| item.snippet)
+      .and_then(|snippet| {
+        // Check for #shorts in the description
+        if snippet.description.unwrap_or_default().contains("#shorts") {
+          println!("Latest video is a short");
+          return None;
+        }
 
-                // Check for #shorts in the description
-                if description.contains("#shorts") {
-                    println!("Latest video is a short");
-                    return None;
-                }
-
-                snippet
-                    .resource_id
-                    .as_ref()
-                    .map(|resource_id| resource_id.video_id.clone())
-                    .unwrap_or_default()
-            })
-    } else {
-        None
-    }
+        snippet
+          .resource_id
+          .as_ref()
+          .map(|resource_id| resource_id.video_id.clone())
+          .unwrap_or_default()
+      })
+  } else {
+    None
+  }
 }
 
-async fn post_comment(
-    client: &YouTube<HttpsConnector<HttpConnector>>,
-    video_id: &str,
-) -> Result<(), google_youtube3::Error> {
-    let comment = "Always first for you".to_string();
-
-    let comment_thread = CommentThread {
-        snippet: Some(CommentThreadSnippet {
-            video_id: Some(video_id.to_string()),
-            top_level_comment: Some(Comment {
-                snippet: Some(CommentSnippet {
-                    text_original: Some(comment),
-                    ..Default::default()
-                }),
-                ..Default::default()
-            }),
-            ..Default::default()
+async fn post_comment(client: &YoutubeClient, video_id: &str, comment: &str) -> google_youtube3::Result<()> {
+  let comment_thread = CommentThread {
+    snippet: Some(CommentThreadSnippet {
+      video_id: Some(video_id.into()),
+      top_level_comment: Some(Comment {
+        snippet: Some(CommentSnippet {
+          text_original: Some(comment.into()),
+          ..Default::default()
         }),
         ..Default::default()
-    };
+      }),
+      ..Default::default()
+    }),
+    ..Default::default()
+  };
 
-    client
-        .comment_threads()
-        .insert(comment_thread)
-        .doit()
-        .await
-        .map(|_| ())
+  client.comment_threads().insert(comment_thread).doit().await.map(|_| ())
 }
 
-async fn get_youtube_client() -> Result<YouTube<HttpsConnector<HttpConnector>>, Box<dyn Error>> {
-    let secret = ApplicationSecret {
-        client_id: env::var("GOOGLE_CLIENT_ID")?,
-        client_secret: env::var("GOOGLE_CLIENT_SECRET")?,
-        auth_uri: "https://accounts.google.com/o/oauth2/auth".into(),
-        token_uri: "https://oauth2.googleapis.com/token".into(),
-        ..Default::default()
-    };
+async fn get_youtube_client(client_id: &str, client_secret: &str) -> io::Result<YoutubeClient> {
+  let secret = ApplicationSecret {
+    client_id: client_id.into(),
+    client_secret: client_secret.into(),
+    auth_uri: "https://accounts.google.com/o/oauth2/auth".into(),
+    token_uri: "https://oauth2.googleapis.com/token".into(),
+    ..Default::default()
+  };
 
-    let auth = InstalledFlowAuthenticator::builder(secret, InstalledFlowReturnMethod::HTTPRedirect)
-        .persist_tokens_to_disk("token.json")
-        .build()
-        .await?;
+  let auth = InstalledFlowAuthenticator::builder(secret, InstalledFlowReturnMethod::HTTPRedirect)
+    .persist_tokens_to_disk("token.json")
+    .build()
+    .await?;
 
-    let https_connector = HttpsConnectorBuilder::new()
-        .with_native_roots()?
-        .https_only()
-        .enable_http2()
-        .build();
+  let https_connector = HttpsConnectorBuilder::new()
+    .with_native_roots()?
+    .https_only()
+    .enable_http2()
+    .build();
 
-    let https_client = Client::builder().build(https_connector);
+  let https_client = Client::builder().build(https_connector);
 
-    Ok(YouTube::new(https_client, auth))
+  Ok(YouTube::new(https_client, auth))
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    dotenvy::dotenv()?;
+  let args = Args::parse();
+  let client = get_youtube_client(&args.google_client_id, &args.google_client_secret).await?;
+  let uploads_playlist_id = get_uploads_playlist_id(&client, &args.channel_id)
+    .await
+    .ok_or("Failed to get uploads playlist ID")?;
 
-    let client = get_youtube_client().await?;
+  println!("Uploads Playlist ID: {uploads_playlist_id}");
 
-    let uploads_playlist_id = get_uploads_playlist_id(&client, &env::var("CHANNEL_ID")?)
-        .await
-        .ok_or("Failed to get uploads playlist ID")?;
+  let mut retries = 0;
+  let latest_video_id = get_latest_video_id(&client, &uploads_playlist_id).await;
 
-    println!("Uploads Playlist ID: {uploads_playlist_id}");
+  loop {
+    sleep(Duration::from_secs(args.pool_interval)).await;
 
-    let mut retries = 0;
-    let latest_video_id = get_latest_video_id(&client, &uploads_playlist_id).await;
+    if let Some(new_video_id) = get_latest_video_id(&client, &uploads_playlist_id).await {
+      println!("Latest Video ID: {new_video_id}");
 
-    loop {
-        sleep(Duration::from_secs(POOL_INTERVAL)).await;
+      if Some(new_video_id.clone()) != latest_video_id {
+        println!("New Video Published: {new_video_id}");
 
-        if let Some(new_video_id) = get_latest_video_id(&client, &uploads_playlist_id).await {
-            println!("Latest Video ID: {new_video_id}");
-
-            if Some(new_video_id.clone()) != latest_video_id {
-                println!("New Video Published: {new_video_id}");
-
-                match post_comment(&client, &new_video_id).await {
-                    Ok(_) => process::exit(0),
-                    Err(e) => {
-                        eprintln!("Failed to post comment: {e}");
-                        retries += 1;
-                    }
-                }
-            }
+        match post_comment(&client, &new_video_id, &args.comment).await {
+          Ok(_) => {
+            println!("Comment created successfuly!");
+            process::exit(0)
+          }
+          Err(e) => {
+            eprintln!("Failed to post comment: {e}");
+            retries += 1;
+          }
         }
-
-        if retries == MAX_RETRIES {
-            panic!("Max tries to create a comment was reached")
-        }
+      }
     }
+
+    if retries == MAX_RETRIES {
+      panic!("Max tries to create a comment was reached")
+    }
+  }
 }

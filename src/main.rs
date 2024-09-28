@@ -137,6 +137,15 @@ async fn get_youtube_client(client_id: &str, client_secret: &str) -> io::Result<
     .build()
     .await?;
 
+  let scopes = [
+    "https://www.googleapis.com/auth/youtube.readonly",  // To read data
+    "https://www.googleapis.com/auth/youtube.force-ssl", // To create comments
+  ];
+
+  // This will request both scopes at once instead of having to wait for a comment creation to log in again and give the
+  // other scope
+  auth.token(&scopes).await.map_err(io::Error::other)?;
+
   let https_connector = HttpsConnectorBuilder::new()
     .with_native_roots()?
     .https_only()

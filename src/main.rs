@@ -44,8 +44,6 @@ struct Args {
 
 type YoutubeClient = YouTube<HttpsConnector<HttpConnector>>;
 
-const MAX_RETRIES: u8 = 3;
-
 async fn get_uploads_playlist_id(client: &YoutubeClient, channel_id: &str) -> Option<String> {
   let response = client
     .channels()
@@ -196,18 +194,17 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
   println!("Uploads Playlist ID: {uploads_playlist_id}");
 
-  let mut retries = 0;
   let latest_video_id = get_latest_video_id(&client, &uploads_playlist_id).await;
   let started_at = Instant::now();
 
-  loop {
+  let result = loop {
     sleep(Duration::from_secs(args.pool_interval)).await;
 
     let elapsed_minutes = started_at.elapsed().as_secs() as f64 / 60.0;
 
     if elapsed_minutes >= args.wait_limit as f64 {
       println!("The wait limit of {} minutes was reached", args.wait_limit);
-      break;
+      break Ok(());
     }
 
     if let Some(new_video_id) = get_latest_video_id(&client, &uploads_playlist_id).await {
@@ -215,29 +212,21 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
       if Some(new_video_id.clone()) != latest_video_id {
         println!("New Video Published: {new_video_id}");
-
-        match post_comment(&client, &new_video_id, &args.comment).await {
+        break match post_comment(&client, &new_video_id, &args.comment).await {
           Ok(_) => {
             println!("Comment created successfuly!");
-            break;
+            Ok(())
           }
-          Err(e) => {
-            eprintln!("Failed to post comment: {e}");
-            retries += 1;
-          }
-        }
+          Err(e) => Err(Box::new(e) as Box<dyn Error>),
+        };
       }
     }
-
-    if retries == MAX_RETRIES {
-      panic!("Max tries to create a comment was reached")
-    }
-  }
+  };
 
   println!(
     "The elapsed time was {}",
     format_duration(started_at.elapsed().as_secs())
   );
 
-  Ok(())
+  result
 }

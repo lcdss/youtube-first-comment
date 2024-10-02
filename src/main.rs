@@ -1,4 +1,5 @@
 use clap::Parser;
+use core::f64;
 use dirs::cache_dir;
 use google_youtube3::{
   api::{Comment, CommentSnippet, CommentThread, CommentThreadSnippet},
@@ -16,21 +17,25 @@ use std::{
 use tokio::time::sleep;
 
 #[derive(Parser)]
+#[command(
+  name = "yfc",
+  about = "A tool to create a new comment on YouTube when a new video is published for the specified channel"
+)]
 struct Args {
   /// Google client ID
-  #[arg(long, required = true)]
+  #[arg(long)]
   google_client_id: String,
 
   /// Google client secret
-  #[arg(long, required = true)]
+  #[arg(long)]
   google_client_secret: String,
 
   /// The comment body
-  #[arg(long, required = true)]
+  #[arg(long)]
   comment: String,
 
   /// YouTube channel ID
-  #[arg(long, required = true)]
+  #[arg(long)]
   channel_id: String,
 
   /// Pool interval (in seconds)
@@ -38,8 +43,8 @@ struct Args {
   pool_interval: u64,
 
   /// Max wait time (in minutes)
-  #[arg(long)]
-  wait_limit: u64,
+  #[arg(long, required = false)]
+  wait_limit: Option<u32>,
 }
 
 type YoutubeClient = YouTube<HttpsConnector<HttpConnector>>;
@@ -196,14 +201,17 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
   let latest_video_id = get_latest_video_id(&client, &uploads_playlist_id).await;
   let started_at = Instant::now();
+  let wait_limit = args.wait_limit.map_or(f64::INFINITY, |value| value as f64);
+
+  println!("wait limit: {wait_limit}");
 
   let result = loop {
     sleep(Duration::from_secs(args.pool_interval)).await;
 
     let elapsed_minutes = started_at.elapsed().as_secs() as f64 / 60.0;
 
-    if elapsed_minutes >= args.wait_limit as f64 {
-      println!("The wait limit of {} minutes was reached", args.wait_limit);
+    if elapsed_minutes >= wait_limit {
+      println!("The wait limit of {} minutes was reached", wait_limit);
       break Ok(());
     }
 

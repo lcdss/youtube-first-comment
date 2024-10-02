@@ -16,6 +16,7 @@ Options:
       --comment <COMMENT>                            The comment body
       --channel-id <CHANNEL_ID>                      YouTube channel ID
       --pool-interval <POOL_INTERVAL>                Pool interval (in seconds) [default: 60]
+      --wait-limit <WAIT_LIMIT>                      Max wait time (in minutes) [optional, defaults to inf]
   -h, --help                                         Print help
 ```
 
@@ -25,6 +26,7 @@ yfc --comment "My first comment" \
     --google-client-id "<GOOGLE_CLIENT_ID>" \
     --google-client-secret "<GOOGLE_CLIENT_SECRET>" \
     --pool-interval 10
+    --wait-limit 300
 ```
 
 You can find the channel id [here](https://www.tunepocket.com/youtube-channel-id-finder) and you will have to create an OAuth 2 Client ID on Google Cloud.

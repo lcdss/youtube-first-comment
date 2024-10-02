@@ -7,7 +7,12 @@ use google_youtube3::{
   oauth2::{ApplicationSecret, InstalledFlowAuthenticator, InstalledFlowReturnMethod},
   YouTube,
 };
-use std::{error::Error, fs, io, path::PathBuf, process, time::Duration};
+use std::{
+  error::Error,
+  fs, io,
+  path::PathBuf,
+  time::{Duration, Instant},
+};
 use tokio::time::sleep;
 
 #[derive(Parser)]
@@ -31,6 +36,10 @@ struct Args {
   /// Pool interval (in seconds)
   #[arg(long, default_value = "60")]
   pool_interval: u64,
+
+  /// Max wait time (in minutes)
+  #[arg(long)]
+  wait_limit: u64,
 }
 
 type YoutubeClient = YouTube<HttpsConnector<HttpConnector>>;
@@ -157,6 +166,26 @@ async fn get_youtube_client(client_id: &str, client_secret: &str) -> io::Result<
   Ok(YouTube::new(https_client, auth))
 }
 
+fn format_duration(seconds: u64) -> String {
+  let hours = seconds / 3600;
+  let minutes = (seconds % 3600) / 60;
+  let seconds = seconds % 60;
+
+  let mut parts = Vec::new();
+
+  if hours > 0 {
+    parts.push(format!("{}h", hours));
+  }
+  if minutes > 0 {
+    parts.push(format!("{}m", minutes));
+  }
+  if seconds > 0 {
+    parts.push(format!("{}s", seconds));
+  }
+
+  parts.join(" ")
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
   let args = Args::parse();
@@ -169,9 +198,17 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
   let mut retries = 0;
   let latest_video_id = get_latest_video_id(&client, &uploads_playlist_id).await;
+  let started_at = Instant::now();
 
   loop {
     sleep(Duration::from_secs(args.pool_interval)).await;
+
+    let elapsed_minutes = started_at.elapsed().as_secs() as f64 / 60.0;
+
+    if elapsed_minutes >= args.wait_limit as f64 {
+      println!("The wait limit of {} minutes was reached", args.wait_limit);
+      break;
+    }
 
     if let Some(new_video_id) = get_latest_video_id(&client, &uploads_playlist_id).await {
       println!("Latest Video ID: {new_video_id}");
@@ -182,7 +219,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         match post_comment(&client, &new_video_id, &args.comment).await {
           Ok(_) => {
             println!("Comment created successfuly!");
-            process::exit(0)
+            break;
           }
           Err(e) => {
             eprintln!("Failed to post comment: {e}");
@@ -196,4 +233,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
       panic!("Max tries to create a comment was reached")
     }
   }
+
+  println!(
+    "The elapsed time was {}",
+    format_duration(started_at.elapsed().as_secs())
+  );
+
+  Ok(())
 }

@@ -203,8 +203,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
   let started_at = Instant::now();
   let wait_limit = args.wait_limit.map_or(f64::INFINITY, |value| value as f64);
 
-  println!("wait limit: {wait_limit}");
-
   let result = loop {
     sleep(Duration::from_secs(args.pool_interval)).await;
 

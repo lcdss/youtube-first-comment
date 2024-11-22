@@ -3,9 +3,12 @@ use core::f64;
 use dirs::cache_dir;
 use google_youtube3::{
   api::{Comment, CommentSnippet, CommentThread, CommentThreadSnippet},
-  hyper::{client::HttpConnector, Client},
   hyper_rustls::{HttpsConnector, HttpsConnectorBuilder},
-  oauth2::{ApplicationSecret, InstalledFlowAuthenticator, InstalledFlowReturnMethod},
+  hyper_util::{
+    client::legacy::{connect::HttpConnector, Client},
+    rt::TokioExecutor,
+  },
+  yup_oauth2::{ApplicationSecret, InstalledFlowAuthenticator, InstalledFlowReturnMethod},
   YouTube,
 };
 use std::{
@@ -18,6 +21,7 @@ use tokio::time::sleep;
 
 #[derive(Parser)]
 #[command(
+  version,
   name = "yfc",
   about = "A tool to create a new comment on YouTube when a new video is published for the specified channel"
 )]
@@ -38,9 +42,9 @@ struct Args {
   #[arg(long)]
   channel_id: String,
 
-  /// Pool interval (in seconds)
+  /// Poll interval (in seconds)
   #[arg(long, default_value = "60")]
-  pool_interval: u64,
+  poll_interval: f32,
 
   /// Max wait time (in minutes)
   #[arg(long, required = false)]
@@ -85,7 +89,7 @@ async fn get_latest_video_id(client: &YoutubeClient, playlist_id: &str) -> Optio
       .and_then(|items| items.first().cloned())
       .and_then(|item| item.snippet)
       .and_then(|snippet| {
-        // Check for #shorts in the description
+        // Try to ignore #shorts by checking the description
         if snippet.description.unwrap_or_default().contains("#shorts") {
           println!("Latest video is a short");
           return None;
@@ -164,7 +168,7 @@ async fn get_youtube_client(client_id: &str, client_secret: &str) -> io::Result<
     .enable_http2()
     .build();
 
-  let https_client = Client::builder().build(https_connector);
+  let https_client = Client::builder(TokioExecutor::new()).build(https_connector);
 
   Ok(YouTube::new(https_client, auth))
 }
@@ -179,9 +183,11 @@ fn format_duration(seconds: u64) -> String {
   if hours > 0 {
     parts.push(format!("{}h", hours));
   }
+
   if minutes > 0 {
     parts.push(format!("{}m", minutes));
   }
+
   if seconds > 0 {
     parts.push(format!("{}s", seconds));
   }
@@ -204,7 +210,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
   let wait_limit = args.wait_limit.map_or(f64::INFINITY, |value| value as f64);
 
   let result = loop {
-    sleep(Duration::from_secs(args.pool_interval)).await;
+    sleep(Duration::from_secs_f32(args.poll_interval)).await;
 
     let elapsed_minutes = started_at.elapsed().as_secs() as f64 / 60.0;
 
